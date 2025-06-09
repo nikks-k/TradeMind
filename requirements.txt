@@ -1,1 +1,4 @@
 feedparser
+requests
+pydantic>=2,<3
+langgraph
