@@ -63,3 +63,6 @@ curl -s -X POST http://localhost:8081/v1/query \
  -H 'Content-Type: application/json' \
  -d '{"query":"SELECT side, SUM(realized_pnl) FROM trades GROUP BY side;"}' | jq
 ```
+
+## Замечания
+В проекте был использован MCP сервер https://github.com/runekaagaard/mcp-alchemy
