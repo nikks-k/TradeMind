@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crypto
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: crypto
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crypto -d crypto"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  mcp:
+    build:
+      context: ./external/mcp-alchemy
+    environment:
+      DB_URL: postgresql+psycopg://crypto:secret@postgres:5432/crypto
+      HOST: 0.0.0.0
+      PORT: "3333"
+      LOG_LEVEL: DEBUG
+      CLAUDE_LOCAL_FILES_PATH: /app/claude_files
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:3333"
+    volumes:
+      - ./mcp_claude_files:/app/claude_files
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent 
+    environment:
+      POSTGRES_DSN: postgresql+asyncpg://crypto:secret@postgres:5432/crypto
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY} 
+      MCP_SERVER_URL: http://mcp:3333
+      LOG_LEVEL: DEBUG
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp:
+        condition: service_started
+    ports:
+      - "8501:8501" # Streamlit будет доступен на 8501 порту хоста
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+  rss_listener:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    command: ["python", "-u", "rss_listener.py"]
+    environment:
+      POSTGRES_DSN: postgresql+asyncpg://crypto:secret@postgres:5432/crypto
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      MCP_SERVER_URL: http://mcp:3333
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp:
+        condition: service_started
+
+volumes:
+  pg_data:
+  mcp_claude_files:

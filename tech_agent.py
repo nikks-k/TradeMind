@@ -1,92 +1,62 @@
-import pandas as pd, pandas_ta as ta, asyncio, numpy as np
-from data_feed import TOP_PAIRS, binance
+import asyncio, logging, numpy as np, pandas as pd, pandas_ta as ta
+from datetime import datetime, timezone
 
-def _sentiment(val: float, thresh: float = 0.0):
-    return ("bullish", 1)  if val >  thresh else \
-           ("bearish", -1) if val < -thresh else ("neutral", 0)
+from data_feed import ensure_pairs, _make_client          
+
+logger   = logging.getLogger(__name__)
+TF       = "5m"
+CANDLES  = 120
+RSI_OB, RSI_OS = 70, 30
+
+def _sent(val: float, thr: float = 0.0):
+    if val >  thr: return "bullish",  1
+    if val < -thr: return "bearish", -1
+    return "neutral", 0
+
+def _indicators(df: pd.DataFrame) -> tuple[float,str]:
+    close, last = df["close"], df.iloc[-1]
+    sma = np.sign(ta.sma(close, 36).iloc[-1] - ta.sma(close, 80).iloc[-1])
+    ema = np.sign(ta.ema(close, 16).iloc[-1] - ta.ema(close, 42).iloc[-1])
+    mac = np.sign(ta.macd(close, 24, 52, 18)["MACD_24_52_18"].iloc[-1])
+    rsi28 = ta.rsi(close, 28).iloc[-1]
+    rsi = 1 if rsi28 > RSI_OB else -1 if rsi28 < RSI_OS else 0
+    bb    = ta.bbands(close, 20)
+    bbp   = (last.close - bb["BBL_20_2.0"].iloc[-1]) /\
+            (bb["BBU_20_2.0"].iloc[-1] - bb["BBL_20_2.0"].iloc[-1])
+    bbp = 1 if bbp > .8 else -1 if bbp < .2 else 0
+
+    w = {"sma":.25,"ema":.25,"mac":.20,"rsi":.15,"bb":.15}
+    score = w["sma"]*sma + w["ema"]*ema + w["mac"]*mac + w["rsi"]*rsi + w["bb"]*bbp
+    reason = f"sma:{sma:+} ema:{ema:+} mac:{mac:+} rsi:{rsi:+} bb:{bbp:+}"
+    return float(score), reason
+
+async def _fetch(pair: str) -> dict | None:
+    base = pair.split("/")[0]
+    client = _make_client()
+    try:
+        ohlcv = await client.fetch_ohlcv(pair, timeframe=TF, limit=CANDLES)
+    except Exception as e:
+        logger.warning("ohlcv %s err: %s", pair, e)
+        return None
+    finally:
+        await client.close()
+
+    if not ohlcv:
+        return None
+    df = pd.DataFrame(ohlcv, columns="ts open high low close vol".split())
+    score, reason = _indicators(df)
+    sentiment, _  = _sent(score, 0.1)
+    return {
+        "asset": base,
+        "sentiment": sentiment,
+        "confidence": abs(score),
+        "score": round(score,4),
+        "reason": f"{reason} → {score:+.2f}",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
 async def tech_signals() -> list[dict]:
-    loop, out = asyncio.get_event_loop(), []
-    for pair in TOP_PAIRS:
-        ohlcv = await loop.run_in_executor(None, binance.fetch_ohlcv,
-                                           pair, "1m", None, 120)
-        df = pd.DataFrame(ohlcv, columns="ts o h l c v".split())
-
-    #     # ─ индикаторы ──────────────────────────────────────
-    #     df["sma20"], df["sma50"] = ta.sma(df["c"], 20), ta.sma(df["c"], 50)
-    #     df["ema12"], df["ema26"] = ta.ema(df["c"], 12), ta.ema(df["c"], 26)
-    #     macd = ta.macd(df["c"])
-    #     df["macd"]  = macd["MACD_12_26_9"]
-    #     df["rsi14"] = ta.rsi(df["c"], 14)
-    #     bb = ta.bbands(df["c"], 20)
-    #     df["bb_pct"] = (df["c"] - bb["BBL_20_2.0"]) / (bb["BBU_20_2.0"] - bb["BBL_20_2.0"])
-
-    #     # ─ переводим в «оценки» ────────────────────────────
-    #     w = {"sma": .25, "ema": .25, "macd": .20, "rsi": .15, "bb": .15}
-    #     last = df.iloc[-1]
-
-    #     # 1) SMA-кросс
-    #     sma_sig = np.sign(last.sma20 - last.sma50)
-    #     # 2) EMA-кросс
-    #     ema_sig = np.sign(last.ema12 - last.ema26)
-    #     # 3) MACD
-    #     macd_sig = np.sign(last.macd)
-    #     # 4) RSI (70/30)
-    #     rsi_sig = 1 if last.rsi14 > 70 else -1 if last.rsi14 < 30 else 0
-    #     # 5) BB% (>0.8 перекуплен, <0.2 перепродан)
-    #     bb_sig = 1 if last.bb_pct > 0.8 else -1 if last.bb_pct < 0.2 else 0
-
-    #     score = (
-    #         w["sma"]*sma_sig + w["ema"]*ema_sig + w["macd"]*macd_sig +
-    #         w["rsi"]*rsi_sig + w["bb"]*bb_sig
-    #     )
-    #     sentiment, sign = _sentiment(score, 0.1)
-
-    #     out.append({
-    #         "asset":     pair.split("/")[0],
-    #         "sentiment": sentiment,
-    #         "conf":      abs(score),         # 0…1
-    #         "score":     float(score),       # -1…1
-    #         "reason":    f"sma:{sma_sig:+} ema:{ema_sig:+} macd:{macd_sig:+} "
-    #                      f"rsi:{rsi_sig:+} bb:{bb_sig:+} → {score:+.2f}"
-    #     })
-    # return out
-
-        df["sma8"], df["sma20"]    = ta.sma(df["c"], 8),  ta.sma(df["c"], 20)
-        df["ema5"], df["ema13"]    = ta.ema(df["c"], 5),  ta.ema(df["c"], 13)
-        macd = ta.macd(df["c"], fast=6, slow=13, signal=4)       # ускоренный MACD ←
-        df["macd"]  = macd["MACD_6_13_4"]
-        df["rsi7"]  = ta.rsi(df["c"], 7)
-        bb = ta.bbands(df["c"], 20)
-        df["bb_pct"] = (
-            (df["c"] - bb["BBL_20_2.0"]) /
-            (bb["BBU_20_2.0"] - bb["BBL_20_2.0"])
-        )
-
-        # --- Сигналы ----------------------------------------------------
-        w = {"sma": .25, "ema": .25, "macd": .20, "rsi": .15, "bb": .15}
-        last = df.iloc[-1]
-
-        sma_sig  = np.sign(last.sma8 - last.sma20)          # кросс 8/20
-        ema_sig  = np.sign(last.ema5 - last.ema13)          # кросс 5/13
-        macd_sig = np.sign(last.macd)
-        rsi_sig  = 1 if last.rsi7 > 70 else -1 if last.rsi7 < 30 else 0
-        bb_sig   = 1 if last.bb_pct > 0.8 else -1 if last.bb_pct < 0.2 else 0
-
-        score = (
-            w["sma"]*sma_sig + w["ema"]*ema_sig + w["macd"]*macd_sig +
-            w["rsi"]*rsi_sig + w["bb"]*bb_sig
-        )
-        sentiment, _ = _sentiment(score, 0.1)
-
-        out.append({
-            "asset":     pair.split("/")[0],
-            "sentiment": sentiment,
-            "conf":      abs(score),
-            "score":     float(score),
-            "reason": (
-                f"sma:{sma_sig:+} ema:{ema_sig:+} macd:{macd_sig:+} "
-                f"rsi:{rsi_sig:+} bb:{bb_sig:+} → {score:+.2f}"
-            )
-        })
-    return out
+    pairs  = await ensure_pairs()
+    tasks  = [asyncio.create_task(_fetch(p)) for p in pairs]
+    res    = await asyncio.gather(*tasks)
+    return [r for r in res if r]
