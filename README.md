@@ -47,9 +47,9 @@ LLM-узел формирует промпт: в начале системная
 
 ## Запуск
 ```bash
-git clone 
-
-docker compose up --build -d # сборка и старт 4 сервисов
+git clone --recursive https://github.com/nikks-k/TradeMind.git
+cd TradeMind                    # переходим в проект
+docker compose up --build -d    # сборка и старт 4 сервисов
 ```
 ##  Проверочные запросы
 ```bash
